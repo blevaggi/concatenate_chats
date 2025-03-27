@@ -8,7 +8,7 @@ import sys
 
 st.set_page_config(
     page_title="Message Column Concatenator",
-    page_icon="📊",
+    page_icon="🤝",
     layout="wide"
 )
 
