@@ -3,7 +3,6 @@ import pandas as pd
 import re
 import os
 import io
-import base64
 
 st.set_page_config(
     page_title="Message Column Concatenator",
@@ -124,21 +123,15 @@ def process_file(uploaded_file):
             else:
                 success_message = f"ℹ️ No Message_No columns found in {filename}"
             
-            csv_buffer = io.StringIO()
+            csv_buffer = io.BytesIO()
             processed_df.to_csv(csv_buffer, index=False)
-            return csv_buffer.getvalue().encode(), file_extension, success_message, df, processed_df
+            csv_buffer.seek(0)
+            return csv_buffer.getvalue(), file_extension, success_message, df, processed_df
         except Exception as e:
             return None, None, f"❌ Error processing CSV file: {str(e)}", None, None
     
     else:
         return None, None, f"❌ Unsupported file format: {file_extension}", None, None
-
-
-def get_download_link(binary_file, filename):
-    """Generate a download link for a file"""
-    b64 = base64.b64encode(binary_file).decode()
-    href = f'<a href="data:application/octet-stream;base64,{b64}" download="{filename}">Download {filename}</a>'
-    return href
 
 
 def main():
@@ -158,38 +151,51 @@ def main():
     uploaded_file = st.file_uploader("Upload your file", type=["xlsx", "xls", "csv"])
     
     if uploaded_file is not None:
-        st.info(f"Processing {uploaded_file.name}...")
-        
-        # Process the file
-        processed_content, extension, message, original_df, processed_df = process_file(uploaded_file)
-        
-        # Display results
-        if processed_content:
-            st.success(message)
+        with st.spinner(f"Processing {uploaded_file.name}..."):
+            # Process the file
+            processed_content, extension, message, original_df, processed_df = process_file(uploaded_file)
             
-            # Create tabs for viewing before and after
-            if original_df is not None and processed_df is not None:
-                tab1, tab2 = st.tabs(["Original Data Sample", "Processed Data Sample"])
-                with tab1:
-                    st.dataframe(original_df.head(10))
-                with tab2:
-                    st.dataframe(processed_df.head(10))
-            
-            # Generate download link
-            new_filename = f"processed_{uploaded_file.name}"
-            st.markdown(get_download_link(processed_content, new_filename), unsafe_allow_html=True)
-            
-            # Explain what was done
-            if processed_df is not None and "Conversation" in processed_df.columns:
-                message_cols = [col for col in original_df.columns if re.match(r'Message_No_\d+', col)]
-                message_cols = sorted(message_cols, key=lambda x: int(x.split('_')[-1]))
-                st.markdown(f"""
-                **Processing Details:**
-                - Found {len(message_cols)} message columns: {', '.join(message_cols[:5])}{"..." if len(message_cols) > 5 else ""}
-                - Added new 'Conversation' column to the left of {message_cols[0]}
-                """)
-        else:
-            st.error(message)
+            # Display results
+            if processed_content:
+                st.success(message)
+                
+                # Create tabs for viewing before and after
+                if original_df is not None and processed_df is not None:
+                    tab1, tab2 = st.tabs(["Original Data Sample", "Processed Data Sample"])
+                    with tab1:
+                        st.dataframe(original_df.head(10))
+                    with tab2:
+                        st.dataframe(processed_df.head(10))
+                
+                # Set up the download button with Streamlit's built-in functionality
+                new_filename = f"processed_{uploaded_file.name}"
+                
+                # Determine MIME type based on file extension
+                mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                if extension == '.csv':
+                    mime_type = "text/csv"
+                elif extension == '.xls':
+                    mime_type = "application/vnd.ms-excel"
+                
+                st.download_button(
+                    label=f"Download processed file",
+                    data=processed_content,
+                    file_name=new_filename,
+                    mime=mime_type,
+                    key="download_button"
+                )
+                
+                # Explain what was done
+                if processed_df is not None and "Conversation" in processed_df.columns:
+                    message_cols = [col for col in original_df.columns if re.match(r'Message_No_\d+', col)]
+                    message_cols = sorted(message_cols, key=lambda x: int(x.split('_')[-1]))
+                    st.markdown(f"""
+                    **Processing Details:**
+                    - Found {len(message_cols)} message columns: {', '.join(message_cols[:5])}{"..." if len(message_cols) > 5 else ""}
+                    - Added new 'Conversation' column to the left of {message_cols[0]}
+                    """)
+            else:
+                st.error(message)
 
 
 if __name__ == "__main__":
