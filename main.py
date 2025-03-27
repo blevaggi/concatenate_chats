@@ -3,6 +3,8 @@ import pandas as pd
 import re
 import os
 import io
+import base64
+import sys
 
 st.set_page_config(
     page_title="Message Column Concatenator",
