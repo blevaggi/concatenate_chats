@@ -7,7 +7,7 @@ import base64
 import sys
 
 st.set_page_config(
-    page_title="Message Column Concatenator",
+    page_title="Message Column Processor",
     page_icon="🤝",
     layout="wide"
 )
@@ -61,6 +61,81 @@ def process_data(df):
     
     # Reorder columns to put Conversation in the right place
     return new_df[new_columns], True
+
+
+def transform_chat_responses(df):
+    """
+    Transform chat response data to have Actual and Expected in the same row.
+    Keeps all original columns and adds Expected and Actual columns.
+    
+    Args:
+        df (pandas.DataFrame): DataFrame with ChatID, ActualOrExpected, and message columns
+    
+    Returns:
+        pandas.DataFrame: Transformed DataFrame with original columns plus Actual and Expected
+    """
+    # Check if necessary columns exist
+    required_columns = ['ChatID', 'ActualOrExpected']
+    if not all(col in df.columns for col in required_columns):
+        raise ValueError(f"Input file must contain these columns: {required_columns}")
+    
+    # Find all Message_No columns
+    message_cols = [col for col in df.columns if re.match(r'Message_No_\d+', col)]
+    if not message_cols:
+        raise ValueError("Input file must contain at least one Message_No_X column")
+    
+    # Sort message columns by their number
+    message_cols.sort(key=lambda x: int(x.split('_')[-1]), reverse=True)
+    
+    # Determine columns to keep in the output (excluding ActualOrExpected)
+    all_columns = list(df.columns)
+    columns_to_keep = [col for col in all_columns if col != 'ActualOrExpected']
+    
+    # Create dictionaries to store row data and Actual/Expected values for each ChatID
+    chat_responses = {}
+    chat_row_data = {}
+    
+    # Process each row
+    for _, row in df.iterrows():
+        chat_id = row['ChatID']
+        response_type = row['ActualOrExpected']
+        
+        # Store the row data (will use the first occurrence of each ChatID)
+        if chat_id not in chat_row_data:
+            # Store all columns except ActualOrExpected
+            chat_row_data[chat_id] = {col: row[col] for col in columns_to_keep}
+        
+        # Initialize this chat ID in the responses dict if needed
+        if chat_id not in chat_responses:
+            chat_responses[chat_id] = {'Actual': None, 'Expected': None}
+        
+        # Find the highest-numbered Message_No column that has a non-empty value
+        message_value = None
+        for col in message_cols:
+            if pd.notna(row.get(col)) and str(row.get(col)).strip():
+                message_value = row[col]
+                break
+                
+        # If we found a message value, store it for this response type
+        if message_value is not None:
+            chat_responses[chat_id][response_type] = message_value
+    
+    # Create a new DataFrame with the transformed data
+    result_data = []
+    for chat_id, row_data in chat_row_data.items():
+        # Start with the original row data
+        new_row = row_data.copy()
+        
+        # Add the Actual and Expected columns
+        new_row['Actual'] = chat_responses[chat_id]['Actual']
+        new_row['Expected'] = chat_responses[chat_id]['Expected']
+        
+        result_data.append(new_row)
+    
+    # Create the result DataFrame
+    result_df = pd.DataFrame(result_data)
+    
+    return result_df
 
 
 def process_file(uploaded_file):
@@ -136,11 +211,64 @@ def process_file(uploaded_file):
         return None, None, f"❌ Unsupported file format: {file_extension}", None, None
 
 
-def main():
-    st.title("📊 Message Column Concatenator")
+def process_response_file(uploaded_file):
+    """
+    Process chat response file to transform Actual/Expected data
+    
+    Args:
+        uploaded_file: Streamlit UploadedFile object
+    
+    Returns:
+        tuple: (processed_file_content, file_extension, success_message, original_df, processed_df)
+    """
+    filename = uploaded_file.name
+    file_extension = os.path.splitext(filename)[1].lower()
+    success_message = ""
+    
+    try:
+        # Read file based on extension
+        if file_extension in ['.xlsx', '.xls']:
+            df = pd.read_excel(uploaded_file)
+        elif file_extension == '.csv':
+            df = pd.read_csv(uploaded_file)
+        elif file_extension == '.txt':
+            df = pd.read_csv(uploaded_file, sep='\t')
+        else:
+            return None, None, f"❌ Unsupported file format: {file_extension}", None, None
+        
+        # Transform the data
+        try:
+            transformed_df = transform_chat_responses(df)
+            
+            # Create output buffer
+            output_buffer = io.BytesIO()
+            
+            # Write to buffer based on extension
+            if file_extension in ['.xlsx', '.xls']:
+                transformed_df.to_excel(output_buffer, index=False)
+                output_extension = '.xlsx'
+            else:
+                transformed_df.to_csv(output_buffer, index=False)
+                output_extension = '.csv'
+            
+            output_buffer.seek(0)
+            success_message = f"✅ Successfully transformed {len(transformed_df)} chat responses"
+            return output_buffer.getvalue(), output_extension, success_message, df, transformed_df
+            
+        except ValueError as ve:
+            return None, None, f"❌ {str(ve)}", df, None
+        except Exception as e:
+            return None, None, f"❌ Error transforming data: {str(e)}", df, None
+        
+    except Exception as e:
+        return None, None, f"❌ Error reading file: {str(e)}", None, None
+
+
+def conversation_tab():
+    st.header("📊 Message Column Concatenator")
     
     st.markdown("""
-    This app creates a new 'Conversation' column by combining all Message_No_{number} columns:
+    This tool creates a new 'Conversation' column by combining all Message_No_{number} columns:
     
     - Odd-numbered messages (Message_No_1, Message_No_3, etc.) are labeled as 'Bot: '
     - Even-numbered messages (Message_No_2, Message_No_4, etc.) are labeled as 'User: '
@@ -150,7 +278,7 @@ def main():
     **Supported file formats:** Excel (.xlsx, .xls) and CSV (.csv)
     """)
     
-    uploaded_file = st.file_uploader("Upload your file", type=["xlsx", "xls", "csv"])
+    uploaded_file = st.file_uploader("Upload your file", type=["xlsx", "xls", "csv"], key="conversation_uploader")
     
     if uploaded_file is not None:
         with st.spinner(f"Processing {uploaded_file.name}..."):
@@ -184,7 +312,7 @@ def main():
                     data=processed_content,
                     file_name=new_filename,
                     mime=mime_type,
-                    key="download_button"
+                    key="convo_download_button"
                 )
                 
                 # Explain what was done
@@ -198,6 +326,89 @@ def main():
                     """)
             else:
                 st.error(message)
+
+
+def response_transformer_tab():
+    st.header("🔄 Expected/Actual Column Transformer")
+    
+    st.markdown("""
+    This tool transforms a historical regression DSE file to have Actual and Expected values in the same row:
+    
+    - Input must contain columns: ChatID, ActualOrExpected, and at least one Message_No_X column
+    - Keeps all original columns and adds 'Actual' and 'Expected' columns at the end
+    - For each ChatID, finds the highest-numbered Message_No_X column with content and uses that value
+    - Rows with the same ChatID will be combined into a single row
+    
+    **Supported file formats:** Excel (.xlsx, .xls), CSV (.csv), and Tab-delimited text files (.txt)
+    """)
+    
+    uploaded_file = st.file_uploader("Upload your file", type=["xlsx", "xls", "csv", "txt"], key="response_uploader")
+    
+    if uploaded_file is not None:
+        with st.spinner(f"Processing {uploaded_file.name}..."):
+            # Process the file
+            processed_content, extension, message, original_df, processed_df = process_response_file(uploaded_file)
+            
+            # Display results
+            if processed_content:
+                st.success(message)
+                
+                # Create tabs for viewing before and after
+                if original_df is not None and processed_df is not None:
+                    tab1, tab2 = st.tabs(["Original Data Sample", "Transformed Data"])
+                    with tab1:
+                        st.dataframe(original_df.head(10))
+                    with tab2:
+                        st.dataframe(processed_df)
+                
+                # Set up the download button
+                new_filename = f"transformed_{os.path.splitext(uploaded_file.name)[0]}.csv"
+                
+                # Determine MIME type based on extension
+                mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                if extension == '.csv':
+                    mime_type = "text/csv"
+                
+                st.download_button(
+                    label=f"Download transformed file",
+                    data=processed_content,
+                    file_name=new_filename,
+                    mime=mime_type,
+                    key="response_download_button"
+                )
+                
+                # Explain what was done
+                unique_chats = len(processed_df) if processed_df is not None else 0
+                kept_columns = list(processed_df.columns) if processed_df is not None else []
+                kept_columns_str = ", ".join(kept_columns[:5]) + ("..." if len(kept_columns) > 5 else "")
+                
+                message_cols = [col for col in original_df.columns if re.match(r'Message_No_\d+', col)]
+                message_cols.sort(key=lambda x: int(x.split('_')[-1]))
+                message_cols_str = ", ".join(message_cols) if len(message_cols) <= 5 else ", ".join(message_cols[:5]) + "..."
+                
+                st.markdown(f"""
+                **Transformation Details:**
+                - Combined Actual and Expected responses for {unique_chats} unique chat IDs
+                - Found message columns: {message_cols_str}
+                - Used the highest-numbered Message_No_X column with content for each row
+                - Kept original columns and added 'Actual' and 'Expected' columns
+                - Result columns: {kept_columns_str}
+                """)
+            else:
+                st.error(message)
+
+
+def main():
+    st.title("🤖 Chatlog Processing Tools")
+    
+    # Create tabs for the different functionalities
+    tab1, tab2 = st.tabs(["Message Concatenator", "Expected/Actual Column Transformer"])
+    
+    with tab1:
+        conversation_tab()
+    
+    with tab2:
+        response_transformer_tab()
 
 
 if __name__ == "__main__":
