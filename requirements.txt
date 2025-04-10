@@ -1,8 +1,3 @@
 streamlit
 pandas
 openpyxl
-re
-os
-io
-base64
-sys
