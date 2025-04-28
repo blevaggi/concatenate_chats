@@ -12,13 +12,14 @@ st.set_page_config(
     layout="wide"
 )
 
-def process_data(df):
+def process_data(df, rule_contains=None):
     """
     Process a dataframe by concatenating Message_No columns into a single conversation column.
-    Odd numbered messages are prefixed with "Bot: " and even numbered with "User: ".
+    Stops concatenation when reaching a message with a matching Rule_No value.
     
     Args:
         df (pandas.DataFrame): DataFrame to process
+        rule_contains (str, optional): If provided, stop concatenation at messages with Rule_No containing this string
     
     Returns:
         pandas.DataFrame: Processed DataFrame with the new Conversation column
@@ -38,13 +39,26 @@ def process_data(df):
     
     for _, row in df.iterrows():
         convo_parts = []
+        
+        # Process each message column
         for i, col in enumerate(message_cols):
+            # Get the corresponding Rule_No column
+            col_num = col.split('_')[-1]
+            rule_col = f"Rule_No_{col_num}"
+            
+            # Check if we should stop based on the Rule_No value
+            if rule_contains and rule_contains.strip() and rule_col in df.columns:
+                rule_value = str(row[rule_col]) if pd.notna(row[rule_col]) else ""
+                if rule_value.strip() and rule_contains.lower() in rule_value.lower():
+                    # Stop the concatenation for this row
+                    break
+            
             message = row[col]
             # Skip empty messages
             if pd.notna(message) and str(message).strip():
                 # Odd numbers (1, 3, 5...) are Bot, Even (2, 4, 6...) are User
-                col_num = int(col.split('_')[-1])
-                prefix = "Bot: " if col_num % 2 == 1 else "User: "
+                col_num_int = int(col_num)
+                prefix = "Bot: " if col_num_int % 2 == 1 else "User: "
                 convo_parts.append(f"{prefix}{message}")
         
         # Join all parts with newlines
@@ -138,12 +152,13 @@ def transform_chat_responses(df):
     return result_df
 
 
-def process_file(uploaded_file):
+def process_file(uploaded_file, rule_contains=None):
     """
     Process uploaded file based on file extension
     
     Args:
         uploaded_file: Streamlit UploadedFile object
+        rule_contains (str, optional): If provided, messages with RULE containing this string won't be included
     
     Returns:
         tuple: (processed_file_content, file_extension, success_message, original_df, processed_df)
@@ -169,7 +184,7 @@ def process_file(uploaded_file):
                     if first_sheet_original is None:
                         first_sheet_original = df.copy()
                     
-                    processed_df, was_processed = process_data(df)
+                    processed_df, was_processed = process_data(df, rule_contains)
                     
                     # Store first processed sheet for display
                     if was_processed and first_sheet_processed is None:
@@ -180,7 +195,8 @@ def process_file(uploaded_file):
                         sheets_processed += 1
                 
                 if sheets_processed > 0:
-                    success_message = f"✅ Successfully processed {sheets_processed} sheet(s) in {filename}"
+                    rule_msg = f" (excluding rules containing: '{rule_contains}')" if rule_contains else ""
+                    success_message = f"✅ Successfully processed {sheets_processed} sheet(s) in {filename}{rule_msg}"
                 else:
                     success_message = f"ℹ️ No Message_No columns found in any sheet of {filename}"
             
@@ -193,10 +209,11 @@ def process_file(uploaded_file):
         # For CSV files, process directly
         try:
             df = pd.read_csv(uploaded_file)
-            processed_df, was_processed = process_data(df)
+            processed_df, was_processed = process_data(df, rule_contains)
             
             if was_processed:
-                success_message = f"✅ Successfully processed {filename}"
+                rule_msg = f" (excluding rules containing: '{rule_contains}')" if rule_contains else ""
+                success_message = f"✅ Successfully processed {filename}{rule_msg}"
             else:
                 success_message = f"ℹ️ No Message_No columns found in {filename}"
             
@@ -274,16 +291,24 @@ def conversation_tab():
     - Even-numbered messages (Message_No_2, Message_No_4, etc.) are labeled as 'User: '
     - Empty messages are ignored
     - The new column is placed to the left of the first Message_No column
+    - You can optionally set a cutoff point by specifying text that appears in any Rule_No column
     
     **Supported file formats:** Excel (.xlsx, .xls) and CSV (.csv)
     """)
     
     uploaded_file = st.file_uploader("Upload your file", type=["xlsx", "xls", "csv"], key="conversation_uploader")
     
+    # Add rule filter input with clear description
+    rule_contains = st.text_input("Stop concatenation at Rule_No containing (optional):", 
+                                   help="When a message's corresponding Rule_No contains this text, that message and all subsequent messages will be excluded from the conversation.")
+    
     if uploaded_file is not None:
         with st.spinner(f"Processing {uploaded_file.name}..."):
             # Process the file
-            processed_content, extension, message, original_df, processed_df = process_file(uploaded_file)
+            processed_content, extension, message, original_df, processed_df = process_file(
+                uploaded_file, 
+                rule_contains if rule_contains.strip() else None
+            )
             
             # Display results
             if processed_content:
@@ -297,7 +322,7 @@ def conversation_tab():
                     with tab2:
                         st.dataframe(processed_df.head(10))
                 
-                # Set up the download button with Streamlit's built-in functionality
+                # Set up the download button
                 new_filename = f"processed_{uploaded_file.name}"
                 
                 # Determine MIME type based on file extension
@@ -319,10 +344,15 @@ def conversation_tab():
                 if processed_df is not None and "Conversation" in processed_df.columns:
                     message_cols = [col for col in original_df.columns if re.match(r'Message_No_\d+', col)]
                     message_cols = sorted(message_cols, key=lambda x: int(x.split('_')[-1]))
+                    
+                    rule_info = ""
+                    if rule_contains and rule_contains.strip():
+                        rule_info = f"\n- Stopped concatenation at messages with Rule_No containing '{rule_contains}'"
+                    
                     st.markdown(f"""
                     **Processing Details:**
                     - Found {len(message_cols)} message columns: {', '.join(message_cols[:5])}{"..." if len(message_cols) > 5 else ""}
-                    - Added new 'Conversation' column to the left of {message_cols[0]}
+                    - Added new 'Conversation' column to the left of {message_cols[0]}{rule_info}
                     """)
             else:
                 st.error(message)
