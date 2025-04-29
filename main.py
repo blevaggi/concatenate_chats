@@ -15,7 +15,8 @@ st.set_page_config(
 def process_data(df, rule_contains=None):
     """
     Process a dataframe by concatenating Message_No columns into a single conversation column.
-    Stops concatenation when reaching a message with a matching Rule_No value.
+    Stops concatenation when reaching a message with a matching Rule_No value and also removes
+    the preceding User message.
     
     Args:
         df (pandas.DataFrame): DataFrame to process
@@ -39,17 +40,28 @@ def process_data(df, rule_contains=None):
     
     for _, row in df.iterrows():
         convo_parts = []
+        skip_next_user = False  # Flag to skip the next user message
         
         # Process each message column
         for i, col in enumerate(message_cols):
             # Get the corresponding Rule_No column
             col_num = col.split('_')[-1]
             rule_col = f"Rule_No_{col_num}"
+            col_num_int = int(col_num)
             
+            # Check if we should skip this message (it's a User message after a truncation)
+            if skip_next_user and col_num_int % 2 == 0:  # Even numbers are User messages
+                skip_next_user = False  # Reset the flag
+                continue
+                
             # Check if we should stop based on the Rule_No value
             if rule_contains and rule_contains.strip() and rule_col in df.columns:
                 rule_value = str(row[rule_col]) if pd.notna(row[rule_col]) else ""
                 if rule_value.strip() and rule_contains.lower() in rule_value.lower():
+                    # If this is a Bot message (odd number), remove the previous User message if it exists
+                    if col_num_int % 2 == 1 and convo_parts and convo_parts[-1].startswith("User: "):
+                        convo_parts.pop()  # Remove the last user message
+                    
                     # Stop the concatenation for this row
                     break
             
@@ -57,7 +69,6 @@ def process_data(df, rule_contains=None):
             # Skip empty messages
             if pd.notna(message) and str(message).strip():
                 # Odd numbers (1, 3, 5...) are Bot, Even (2, 4, 6...) are User
-                col_num_int = int(col_num)
                 prefix = "Bot: " if col_num_int % 2 == 1 else "User: "
                 convo_parts.append(f"{prefix}{message}")
         
